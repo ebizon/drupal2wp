@@ -1,0 +1,4 @@
+; $Id$
+name = Drupal to Wordpress Migration
+description = "module for migrating content to wordpress"
+core = 6.x

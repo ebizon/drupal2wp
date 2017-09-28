@@ -1,0 +1,1880 @@
+<?php
+	set_time_limit(0);
+	ini_set('memory_limit', '-1');
+/*
+ * 
+ * hook_menu();
+ * 
+ * */
+function migration_menu(){
+	$items = array();
+	$items['admin/update_users'] = array(
+		'title' => t('update users'),
+		'type' => MENU_CALLBACK,
+		'page callback' => 'update_users',  
+		'access callback' => TRUE,   
+	); 
+	$items['admin/migration/taxonomies'] = array( 
+		'title' => 'Taxonomy Migration', 
+		'description' => 'Migrate Taxonomies in wordpress',
+		'page callback' => 'drupal_get_form', 
+		'page arguments' => array('migrate_taxonomies'), 
+		'access callback' => TRUE
+    );
+    $items['admin/migration/pages'] = array( 
+		'title' => 'Pages Migration', 
+		'description' => 'Migrate Pages in wordpress',
+		'page callback' => 'migrate_pages',  
+		'access callback' => TRUE
+	);
+	$items['admin/migration/books'] = array( 
+		'title' => 'Books Migration', 
+		'description' => 'Migrate Books in wordpress',
+		'page callback' => 'migrate_books',  
+		'access callback' => TRUE
+	);
+	$items['admin/migration/story'] = array( 
+		'title' => 'Story Migration', 
+		'description' => 'Migrate Srory in wordpress',
+		'page callback' => 'migrate_story',  
+		'access callback' => TRUE
+	);
+	$items['admin/migration/blogs'] = array( 
+		'title' => 'Blogs Migration', 
+		'description' => 'Migrate Blogs in wordpress',
+		'page callback' => 'migrate_blogs',  
+		'access callback' => TRUE
+	);
+	$items['admin/migration/images'] = array( 
+		'title' => 'Images Migration', 
+		'description' => 'Migrate Images in wordpress',
+		'page callback' => 'migrate_images',  
+		'access callback' => TRUE
+	);
+	
+	return $items;
+}
+
+
+
+
+/**
+ * 
+ * Migrate Images 
+ * 
+ **/
+
+function migrate_images(){
+	
+	$nodes =array();
+	$result = db_query("select n.nid from {node} n where n.type = '%s'", 'image' );
+	while ($data = db_fetch_object($result)){
+		
+		array_push($nodes, node_load($data->nid));
+		
+	}
+	
+	
+	 $batch = array(
+		  'title' => t('Images Migrating'),
+		  'operations' => array(
+			  array('batch_process_image_migrate_op', array($nodes)),
+		   ),
+		  'progress_message' => t('Process @current out of @total.'),
+		  'error_message' => t('Batch has encountered an error.'),
+		  'finished' => 'batch_process_image_migrate_finished',       
+	  );
+     batch_set($batch);
+  
+  
+    batch_process('/'); 	   
+	
+}
+
+
+function batch_process_image_migrate_finished($success, $results, $operations){
+  if ($success) {    
+    drupal_set_message(t('@count Images Created', array('@count' => isset($results['updated']) ? count($results['updated']) : 0)));
+  } else {
+    $error_operation = reset($operations);
+    drupal_set_message(t('An error occurred while processing @operation with arguments : @args', array('@operation' => $error_operation[0], '@args' => print_r($error_operation[0], TRUE))));
+  }
+  watchdog('import', 'Images import batch process finished');
+}
+
+
+function batch_process_image_migrate_op($nodes, &$context){
+	
+	$wpPrefix = 'wp_';
+	$row = $data = array();
+	$itr = 0;
+	$count = 0;
+	$content = array();
+	
+	$site_url = "http://localhost/wordpress/";
+	
+	foreach($nodes as $key => $value) {
+		if($value->nid != 0){
+			$row[$itr]['postdata'] = $value;
+			$itr++;
+		}
+	}	
+	
+	if (empty($context['sandbox']['progress'])) {
+		$context['sandbox']['progress'] = 0;
+		$context['sandbox']['max'] = count($nodes);
+		watchdog('import', 'Process User import.');
+	}
+	
+	// Create Iteration variable
+	if (empty($context['sandbox']['iteration'])) {
+		$context['sandbox']['iteration'] = 0;
+	}
+	
+	// Check for the end of cycle
+	if ($context['sandbox']['iteration'] < $context['sandbox']['max']) {
+		// Count of operation in one batch step
+		$limit = 50;
+		// Counts completed operations in one butch step
+		$counter = 0;
+		if ($context['sandbox']['progress'] != 0) {
+		  $context['sandbox']['iteration'] = $context['sandbox']['iteration'] + $limit;
+		}
+		
+		$wp_upload_folder =  date('2017/08',time());
+		
+		for ($j = $context['sandbox']['iteration']; $j < $context['sandbox']['max'] && $counter < $limit; $j++) {
+			$data = array();
+			$data2 = array();
+			
+			$nid = 	$row[$j]['postdata']->nid;
+			$post_path = $row[$j]['postdata']->path;	
+			$post_name = strtolower(str_replace(" ", "-", $row[$j]['postdata']->title));		
+			
+		    $excerpt = '';
+		    if(isset($row[$j]['postdata']->teaser)){
+			  $excerpt = $row[$j]['postdata']->teaser; 
+		    }
+		    
+			if($row[$j]['postdata']->moderate == 1){
+				$state = 'pending';
+			}else if($row[$j]['postdata']->status == 1){
+				$state = 'publish';
+			} else {
+				$state = 'draft';
+			}
+			
+			if(!empty($row[$j]['postdata']->body)){
+			   $post_content =  $row[$j]['postdata']->body;
+		    } else {
+				$post_content = '';
+			}
+		    
+		    $post_date = date("Y-m-d H:i:s", $row[$j]['postdata']->created);		    
+		    $post_modified = date("Y-m-d H:i:s", $row[$j]['postdata']->changed);	
+		    
+		    $post_title = $row[$j]['postdata']->title;
+		    $post_excerpt = $excerpt;
+		    $post_status = $state;
+		    $post_type = 'image';
+		    
+		     if($row[$j]['postdata']->comment == 0){
+				$comment_status = 'open';
+			 } else {
+				$comment_status = 'close'; 
+			 }
+			 
+		     $ping_status = 'close';
+		     $to_ping = '';
+		     $pinged = '';
+		     $post_content_filtered = '';
+		     $post_parent = 0;
+		     
+		     $guid = '';
+		     $menu_order = 0;
+		     $post_mime_type = '';
+		     $comment_count = $row[$j]['postdata']->comment_count;		    
+		     db_set_active('wordpress');
+		     $uid = 1;
+		     if($row[$j]['postdata']->uid >0){
+				 $uid = $row[$j]['postdata']->uid;
+			 }
+		     //Get User ID
+		     $post_author = $row[$j]['postdata']->uid;
+		     //Insert Post
+		     db_query("insert into ".$wpPrefix."posts (post_author, post_date, post_date_gmt, post_content, post_title, post_excerpt, post_status, comment_status, ping_status, post_name, to_ping, pinged, post_modified, post_modified_gmt, post_content_filtered, post_parent, guid, menu_order, post_type, post_mime_type, comment_count) values 
+													  ('%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s','%s', '%s', '%s', '%s', '%s', '%s', '%d','%s', '%d', '%s', '%s', '%d')",
+													  $post_author, $post_date, $post_date, $post_content, $post_title, $post_excerpt, $post_status, $comment_status, $ping_status, $post_name, $to_ping, $pinged, $post_modified, $post_modified, $post_content_filtered, $post_parent, $guid, $menu_order, $post_type, $post_mime_type, $comment_count);
+		    
+			 
+		   
+			$post_id = db_result(db_query("SELECT ID FROM  ".$wpPrefix."posts order by ID desc limit 0, 1"));
+			
+			//Update GUID value
+			$guid = $site_url.'?post_type=image&p='.$post_id;			
+			db_query("update ".$wpPrefix."posts set guid = '".$guid."' where id = $post_id");
+					
+			//Save Drupal Nid
+			db_query("insert into ".$wpPrefix."postmeta (post_id, meta_key, meta_value) values ('%d', '%s', '%s')", $post_id, 'old_drupal_content_id', $nid);
+						
+			//SEO insertion
+			db_query("insert into ".$wpPrefix."postmeta (post_id, meta_key, meta_value) values ('%d', '%s', '%s')", $post_id, '_yoast_wpseo_title', $row[$j]['postdata']->title);
+		 			
+			if($post_excerpt){
+				db_query("insert into ".$wpPrefix."postmeta (post_id, meta_key, meta_value) values ('%d', '%s', '%s')", $post_id, '_yoast_wpseo_metadesc', $post_excerpt);
+			}
+			
+		 	
+		 	
+		 	
+		 	
+		 	
+		if(isset($row[$j]['postdata']->images['_original'])){
+		
+					//Insert Featured image
+					//$image = $img->fid;	
+									
+					$image_url = file_create_url($row[$j]['postdata']->images['_original']);	
+					$source =  '/var/www/html/wordpress/wp-content/uploads/'.$wp_upload_folder;	
+					
+					
+					if (!is_dir($source)) {
+						mkdir($source, 0777, true);
+					}
+									
+					$destination = $source.'/'.basename($image_url);											
+					file_put_contents($destination, file_get_contents($image_url));
+						
+								
+					$titl = explode('.',basename($image_url));				
+					$alt = $titl[0];				
+					$img_title =basename($titl) ;			   
+				
+					$img=explode('.',basename($image_url));
+					$img=$img[count($img)-1];
+
+					$img_mime='image/'.$img;
+					
+					
+					//db_set_active('wordpress');
+						
+					$img_author =  $post_author;
+					$img_created= $post_date;
+						
+					$img_guid = 'http://localhost/wordpress/wp-content/uploads/'.$wp_upload_folder.'/'.basename($image_url);
+					
+					
+					
+					db_query("insert into ".$wpPrefix."posts (post_author, post_date, post_date_gmt, post_content, post_title, post_excerpt, post_status, comment_status, ping_status, post_name, to_ping, pinged, post_modified, post_modified_gmt, post_content_filtered, post_parent, guid, menu_order, post_type, post_mime_type, comment_count) values 
+																  ('%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s','%s', '%s', '%s', '%s', '%s', '%s', '%d','%s', '%d', '%s', '%s', '%d')",
+																  $img_author, $img_created, $img_created, $img_title, $alt, $img_title, 'inherit', $comment_status, $ping_status, $titl[0], $to_ping, $pinged, $img_created, $img_created, $post_content_filtered, $post_id, $img_guid, 0, 'attachment',$img_mime, 0);
+					   
+					   
+											
+				    $wp_post_id_result = db_result(db_query("select id from wp_posts order by id desc limit 0, 1"));
+						
+					$unserialise_array = array (
+											  'width' => 720,
+											  'height' => 720,
+											  'file' => $wp_upload_folder.'/'.basename($image_url),
+											  'sizes' => 
+											  array (
+											  ),
+											  'image_meta' => 
+											  array (
+												'aperture' => '0',
+												'credit' => '',
+												'camera' => '',
+												'caption' => '',
+												'created_timestamp' => '0',
+												'copyright' => '',
+												'focal_length' => '0',
+												'iso' => '0',
+												'shutter_speed' => '0',
+												'title' => '',
+												'orientation' => '0',
+												'keywords' => 
+												array (
+												),
+											  ),
+											);
+												
+					db_query("insert into ".$wpPrefix."postmeta (post_id, meta_key, meta_value) values ('%d', '%s', '%s')", $wp_post_id_result, '_wp_attachment_metadata', serialize($unserialise_array));
+					 
+					db_query("insert into ".$wpPrefix."postmeta (post_id, meta_key, meta_value) values ('%d', '%s', '%s')", $wp_post_id_result, '_wp_attached_file', $wp_upload_folder.'/'.basename($image_url));
+				
+					
+				//Add entry for Featured Image
+				db_query("insert into ".$wpPrefix."postmeta (post_id, meta_key, meta_value) values ('%d', '%s', '%s')", $post_id, '_thumbnail_id', $wp_post_id_result);
+		
+				
+						
+											
+			} 	
+		 	
+		 	
+		 	
+		 	
+		 	
+		 	
+		 	
+		 	
+		 	
+		 	
+		 	
+		 	
+		 	
+		 	
+		 	
+		 	
+		 	
+		 	
+		 	
+		 	
+		 	
+		 	
+		 	
+		 	
+		 	
+		 	
+		 	 if(count($row[$j]['postdata']->files) > 0){
+				foreach($row[$j]['postdata']->files as $img){
+					//Insert Featured image
+					$image = $img->fid;						
+					$image_url = file_create_url($img->filepath);					
+					$source =  '/var/www/html/wordpress/wp-content/uploads/'.$wp_upload_folder;						
+					
+					if (!is_dir($source)) {
+						mkdir($source, 0777, true);
+					}
+									
+					$destination = $source.'/'.basename($image_url);											
+					file_put_contents($destination, file_get_contents($image_url));
+						
+					$titl = explode('.',basename($image_url));				
+					$alt = $titl[0];				
+					$img_title = $img->filename;			   
+						
+					//db_set_active('wordpress');
+						
+					$img_author =  $img->uid;
+					$img_created = date("Y-m-d H:i:s", $img->timestamp);
+						
+					$img_guid = $site_url.'wp-content/uploads/'.$wp_upload_folder.'/'.basename($image_url);				
+					
+					db_query("insert into ".$wpPrefix."posts (post_author, post_date, post_date_gmt, post_content, post_title, post_excerpt, post_status, comment_status, ping_status, post_name, to_ping, pinged, post_modified, post_modified_gmt, post_content_filtered, post_parent, guid, menu_order, post_type, post_mime_type, comment_count) values 
+																  ('%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s','%s', '%s', '%s', '%s', '%s', '%s', '%d','%s', '%d', '%s', '%s', '%d')",
+																  $img_author, $img_created, $img_created, $img_title, $alt, $img_title, 'inherit', $comment_status, $ping_status, $titl[0], $to_ping, $pinged, $img_created, $img_created, $post_content_filtered, $post_id, $img_guid, 0, 'attachment', $img->filemime, 0);
+					   
+					   
+											
+				    $wp_post_id_result = db_result(db_query("select id from wp_posts order by id desc limit 0, 1"));
+						
+					$unserialise_array = array (
+											  'width' => 720,
+											  'height' => 720,
+											  'file' => $wp_upload_folder.'/'.basename($image_url),
+											  'sizes' => 
+											  array (
+											  ),
+											  'image_meta' => 
+											  array (
+												'aperture' => '0',
+												'credit' => '',
+												'camera' => '',
+												'caption' => '',
+												'created_timestamp' => '0',
+												'copyright' => '',
+												'focal_length' => '0',
+												'iso' => '0',
+												'shutter_speed' => '0',
+												'title' => '',
+												'orientation' => '0',
+												'keywords' => 
+												array (
+												),
+											  ),
+											);
+												
+					db_query("insert into ".$wpPrefix."postmeta (post_id, meta_key, meta_value) values ('%d', '%s', '%s')", $wp_post_id_result, '_wp_attachment_metadata', serialize($unserialise_array));
+					 
+					db_query("insert into ".$wpPrefix."postmeta (post_id, meta_key, meta_value) values ('%d', '%s', '%s')", $wp_post_id_result, '_wp_attached_file', $wp_upload_folder.'/'.basename($image_url));
+				
+					
+				}
+				
+				
+						
+											
+			}
+		   	
+		 db_set_active();  
+		 
+		  $context['results']['updated'][] = $j;
+		  $context['sandbox']['progress']++;
+		  $counter++;
+          $context['message'] = t('Now processing node %nid.Process %progress of %count', array('%nid' => $nid, '%progress' => $context['sandbox']['progress'], '%count' => $context['sandbox']['max']));
+          $context['results']['processed'] = $context['sandbox']['progress'];
+      
+		}
+		
+	}
+	
+	if ($context['sandbox']['progress'] != $context['sandbox']['max']) {
+		$context['finished'] = $context['sandbox']['progress'] / $context['sandbox']['max'];
+	}
+	else if($context['sandbox']['progress'] == $context['sandbox']['max']) {
+		// Pass extra results to finished functions via $context['results']
+		$context['finished'] = 1;
+		$context['results']['data_custom'] = $data;
+	}  
+}
+
+
+
+
+/**
+ * 
+ * Migrate Blogs 
+ * 
+ **/
+
+function migrate_blogs(){
+	
+	$nodes =array();
+	$result = db_query("select n.nid from {node} n where n.type = '%s' limit 1000, 2100", 'blog' );
+	while ($data = db_fetch_object($result)){
+		
+		array_push($nodes, node_load($data->nid));
+		
+	}
+	
+	
+	 $batch = array(
+		  'title' => t('Blogs Migrating'),
+		  'operations' => array(
+			  array('batch_process_blog_migrate_op', array($nodes)),
+		   ),
+		  'progress_message' => t('Process @current out of @total.'),
+		  'error_message' => t('Batch has encountered an error.'),
+		  'finished' => 'batch_process_blog_migrate_finished',       
+	  );
+     batch_set($batch);
+  
+  
+    batch_process('/'); 	   
+	
+}
+
+
+function batch_process_blog_migrate_finished($success, $results, $operations){
+  if ($success) {    
+    drupal_set_message(t('@count Blogs Created', array('@count' => isset($results['updated']) ? count($results['updated']) : 0)));
+  } else {
+    $error_operation = reset($operations);
+    drupal_set_message(t('An error occurred while processing @operation with arguments : @args', array('@operation' => $error_operation[0], '@args' => print_r($error_operation[0], TRUE))));
+  }
+  watchdog('import', 'Blogs import batch process finished');
+}
+
+
+function batch_process_blog_migrate_op($nodes, &$context){
+	
+	$wpPrefix = 'wp_';
+	$row = $data = array();
+	$itr = 0;
+	$count = 0;
+	$content = array();
+	
+	$site_url = "http://localhost/wordpress/";
+	
+	foreach($nodes as $key => $value) {
+		if($value->nid != 0){
+			$row[$itr]['postdata'] = $value;
+			$itr++;
+		}
+	}	
+	
+	if (empty($context['sandbox']['progress'])) {
+		$context['sandbox']['progress'] = 0;
+		$context['sandbox']['max'] = count($nodes);
+		watchdog('import', 'Process User import.');
+	}
+	
+	// Create Iteration variable
+	if (empty($context['sandbox']['iteration'])) {
+		$context['sandbox']['iteration'] = 0;
+	}
+	
+	// Check for the end of cycle
+	if ($context['sandbox']['iteration'] < $context['sandbox']['max']) {
+		// Count of operation in one batch step
+		$limit = 50;
+		// Counts completed operations in one butch step
+		$counter = 0;
+		if ($context['sandbox']['progress'] != 0) {
+		  $context['sandbox']['iteration'] = $context['sandbox']['iteration'] + $limit;
+		}
+		
+		$wp_upload_folder =  date('2017/08',time());
+		
+		for ($j = $context['sandbox']['iteration']; $j < $context['sandbox']['max'] && $counter < $limit; $j++) {
+			$data = array();
+			$data2 = array();
+			
+			$nid = 	$row[$j]['postdata']->nid;
+			$post_path = $row[$j]['postdata']->path;	
+			$post_name=strtolower(preg_replace('/[^A-Za-z0-9-]+/', '-', $row[$j]['postdata']->title));			
+			
+		    $excerpt = '';
+		    if(isset($row[$j]['postdata']->teaser)){
+			  $excerpt = $row[$j]['postdata']->teaser; 
+		    }
+		    
+			if($row[$j]['postdata']->moderate == 1){
+				$state = 'pending';
+			}else if($row[$j]['postdata']->status == 1){
+				$state = 'publish';
+			} else {
+				$state = 'draft';
+			}
+			
+			if(!empty($row[$j]['postdata']->body)){
+			   $post_content =  $row[$j]['postdata']->body;
+		    } else {
+				$post_content = '';
+			}
+		    
+		    $post_date = date("Y-m-d H:i:s", $row[$j]['postdata']->created);		    
+		    $post_modified = date("Y-m-d H:i:s", $row[$j]['postdata']->changed);	
+		    
+		    $post_title = $row[$j]['postdata']->title;
+		    $post_excerpt = $excerpt;
+		    $post_status = $state;
+		    $post_type = 'post';
+		    
+		     if($row[$j]['postdata']->comment == 0){
+				$comment_status = 'open';
+			 } else {
+				$comment_status = 'close'; 
+			 }
+			 
+		     $ping_status = 'close';
+		     $to_ping = '';
+		     $pinged = '';
+		     $post_content_filtered = '';
+		     $post_parent = 0;
+		     
+		     $guid = '';
+		     $menu_order = 0;
+		     $post_mime_type = '';
+		     $comment_count = $row[$j]['postdata']->comment_count;		    
+		     db_set_active('wordpress');
+		     $uid = 1;
+		     if($row[$j]['postdata']->uid >0){
+				 $uid = $row[$j]['postdata']->uid;
+			 }
+		     //Get User ID
+		     $post_author = $row[$j]['postdata']->uid;
+		     //Insert Post
+		     db_query("insert into ".$wpPrefix."posts (post_author, post_date, post_date_gmt, post_content, post_title, post_excerpt, post_status, comment_status, ping_status, post_name, to_ping, pinged, post_modified, post_modified_gmt, post_content_filtered, post_parent, guid, menu_order, post_type, post_mime_type, comment_count) values 
+													  ('%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s','%s', '%s', '%s', '%s', '%s', '%s', '%d','%s', '%d', '%s', '%s', '%d')",
+													  $post_author, $post_date, $post_date, $post_content, $post_title, $post_excerpt, $post_status, $comment_status, $ping_status, $post_name, $to_ping, $pinged, $post_modified, $post_modified, $post_content_filtered, $post_parent, $guid, $menu_order, $post_type, $post_mime_type, $comment_count);
+		    
+			 
+		   
+			$post_id = db_result(db_query("SELECT ID FROM  ".$wpPrefix."posts order by ID desc limit 0, 1"));
+			
+			//Update GUID value
+			$guid = $site_url.'?post_type=post&p='.$post_id;			
+			db_query("update ".$wpPrefix."posts set guid = '".$guid."' where id = $post_id");
+					
+			//Save Drupal Nid
+			db_query("insert into ".$wpPrefix."postmeta (post_id, meta_key, meta_value) values ('%d', '%s', '%s')", $post_id, 'old_drupal_content_id', $nid);
+						
+			//SEO insertion
+			db_query("insert into ".$wpPrefix."postmeta (post_id, meta_key, meta_value) values ('%d', '%s', '%s')", $post_id, '_yoast_wpseo_title', $row[$j]['postdata']->title);
+		 			
+			if($post_excerpt){
+				db_query("insert into ".$wpPrefix."postmeta (post_id, meta_key, meta_value) values ('%d', '%s', '%s')", $post_id, '_yoast_wpseo_metadesc', $post_excerpt);
+			}
+			
+		 	   //Attach Taxonomy Contents
+		   if(count($row[$j]['postdata']->taxonomy) > 0){
+			   $c = 0;
+				foreach($row[$j]['postdata']->taxonomy as $term){					
+					$term_taxonomy_id = db_result(db_query("SELECT term_taxonomy_id FROM ".$wpPrefix."term_taxonomy WHERE term_id = '%d'", $term->tid));
+					db_query("insert into ".$wpPrefix."term_relationships (object_id, term_taxonomy_id, term_order) values ('%d', '%d', '%d')", $post_id, $term_taxonomy_id, $c);	
+					$c++;					
+				}
+		  }
+		  
+		  
+		   $fid = $row[$j]['postdata']->fid;
+		   $wp_upload_folder =  date('Y/m',time());	
+		  
+		 	
+		 	 if(count($row[$j]['postdata']->files) > 0){
+				foreach($row[$j]['postdata']->files as $img){
+					//Insert Featured image
+					$image = $img->fid;						
+					$image_url = file_create_url($img->filepath);					
+					$source =  '/var/www/html/wordpress/wp-content/uploads/'.$wp_upload_folder;	
+					$site_img_url = str_replace('http://localhost/kioonline/', 'http://www.kioonline.com/', $image_url);
+					$site_img_url2 = str_replace('http://localhost/kioonline/', 'http://kioonline.com/', $image_url);
+					
+					
+					if (!is_dir($source)) {
+						mkdir($source, 0777, true);
+					}
+									
+					$destination = $source.'/'.basename($image_url);											
+					file_put_contents($destination, file_get_contents($image_url));
+						
+					$titl = explode('.',basename($image_url));				
+					$alt = $titl[0];				
+					$img_title = $img->filename;			   
+						
+					//db_set_active('rc_wordpress');
+						
+					$img_author =  $img->uid;
+					$img_created = date("Y-m-d H:i:s", $img->timestamp);
+						
+					$img_guid = $site_url.'wp-content/uploads/'.$wp_upload_folder.'/'.basename($image_url);
+					
+					
+					$post_content = str_replace($site_img_url, $img_guid, $post_content);
+					$post_content = str_replace($site_img_url2, $img_guid, $post_content);
+					
+					
+					db_query("insert into ".$wpPrefix."posts (post_author, post_date, post_date_gmt, post_content, post_title, post_excerpt, post_status, comment_status, ping_status, post_name, to_ping, pinged, post_modified, post_modified_gmt, post_content_filtered, post_parent, guid, menu_order, post_type, post_mime_type, comment_count) values 
+																  ('%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s','%s', '%s', '%s', '%s', '%s', '%s', '%d','%s', '%d', '%s', '%s', '%d')",
+																  $img_author, $img_created, $img_created, $img_title, $alt, $img_title, 'inherit', $comment_status, $ping_status, $titl[0], $to_ping, $pinged, $img_created, $img_created, $post_content_filtered, $post_id, $img_guid, 0, 'attachment', $img->filemime, 0);
+					   
+					   
+											
+				    $wp_post_id_result = db_result(db_query("select id from wp_posts order by id desc limit 0, 1"));
+						
+					$unserialise_array = array (
+											  'width' => 720,
+											  'height' => 720,
+											  'file' => $wp_upload_folder.'/'.basename($image_url),
+											  'sizes' => 
+											  array (
+											  ),
+											  'image_meta' => 
+											  array (
+												'aperture' => '0',
+												'credit' => '',
+												'camera' => '',
+												'caption' => '',
+												'created_timestamp' => '0',
+												'copyright' => '',
+												'focal_length' => '0',
+												'iso' => '0',
+												'shutter_speed' => '0',
+												'title' => '',
+												'orientation' => '0',
+												'keywords' => 
+												array (
+												),
+											  ),
+											);
+												
+					db_query("insert into ".$wpPrefix."postmeta (post_id, meta_key, meta_value) values ('%d', '%s', '%s')", $wp_post_id_result, '_wp_attachment_metadata', serialize($unserialise_array));
+					 
+					db_query("insert into ".$wpPrefix."postmeta (post_id, meta_key, meta_value) values ('%d', '%s', '%s')", $wp_post_id_result, '_wp_attached_file', $wp_upload_folder.'/'.basename($image_url));
+				
+					
+				}
+				
+				db_query("update ".$wpPrefix."posts set post_content = '%s' where ID = %d", $post_content, $post_id);
+						
+											
+			}
+		   	
+		 db_set_active();  
+		 
+		  $context['results']['updated'][] = $j;
+		  $context['sandbox']['progress']++;
+		  $counter++;
+          $context['message'] = t('Now processing node %nid.Process %progress of %count', array('%nid' => $nid, '%progress' => $context['sandbox']['progress'], '%count' => $context['sandbox']['max']));
+          $context['results']['processed'] = $context['sandbox']['progress'];
+      
+		}
+		
+	}
+	
+	if ($context['sandbox']['progress'] != $context['sandbox']['max']) {
+		$context['finished'] = $context['sandbox']['progress'] / $context['sandbox']['max'];
+	}
+	else if($context['sandbox']['progress'] == $context['sandbox']['max']) {
+		// Pass extra results to finished functions via $context['results']
+		$context['finished'] = 1;
+		$context['results']['data_custom'] = $data;
+	}  
+}
+
+
+
+
+
+
+/**
+ * 
+ * Migrate Pages
+ * 
+ **/
+function migrate_pages(){
+	
+	$nodes =array();
+	$result = db_query("select n.nid from {node} n where n.type = '%s'", 'page' );
+	while ($data = db_fetch_object($result)){
+		
+	
+		
+		array_push($nodes, node_load($data->nid));
+		
+	}
+	
+
+	
+	 $batch = array(
+		  'title' => t('Pages Migrating'),
+		  'operations' => array(
+			  array('batch_process_page_migrate_op', array($nodes)),
+		   ),
+		  'progress_message' => t('Process @current out of @total.'),
+		  'error_message' => t('Batch has encountered an error.'),
+		  'finished' => 'batch_process_page_migrate_finished',       
+	  );
+     batch_set($batch);
+  
+  
+    batch_process('/'); 	   
+	
+}
+
+function batch_process_page_migrate_finished($success, $results, $operations){
+  if ($success) {    
+    drupal_set_message(t('@count Pages Created', array('@count' => isset($results['updated']) ? count($results['updated']) : 0)));
+  } else {
+    $error_operation = reset($operations);
+    drupal_set_message(t('An error occurred while processing @operation with arguments : @args', array('@operation' => $error_operation[0], '@args' => print_r($error_operation[0], TRUE))));
+  }
+  watchdog('import', 'Pages import batch process finished');
+}
+
+
+function batch_process_page_migrate_op($nodes, &$context){
+	
+	$wpPrefix = 'wp_';
+	$row = $data = array();
+	$itr = 0;
+	$count = 0;
+	$content = array();
+	
+	$site_url = "http://localhost/wordpress/";
+	
+	foreach($nodes as $key => $value) {
+		if($value->nid != 0){
+			$row[$itr]['postdata'] = $value;
+			$itr++;
+		}
+	}	
+	
+	if (empty($context['sandbox']['progress'])) {
+		$context['sandbox']['progress'] = 0;
+		$context['sandbox']['max'] = count($nodes);
+		watchdog('import', 'Process User import.');
+	}
+	
+	// Create Iteration variable
+	if (empty($context['sandbox']['iteration'])) {
+		$context['sandbox']['iteration'] = 0;
+	}
+	
+	// Check for the end of cycle
+	if ($context['sandbox']['iteration'] < $context['sandbox']['max']) {
+		// Count of operation in one batch step
+		$limit = 50;
+		// Counts completed operations in one butch step
+		$counter = 0;
+		if ($context['sandbox']['progress'] != 0) {
+		  $context['sandbox']['iteration'] = $context['sandbox']['iteration'] + $limit;
+		}
+		
+		$wp_upload_folder =  date('2017/08',time());
+		
+		for ($j = $context['sandbox']['iteration']; $j < $context['sandbox']['max'] && $counter < $limit; $j++) {
+			$data = array();
+			$data2 = array();
+			
+			$nid = 	$row[$j]['postdata']->nid;
+			$post_path = $row[$j]['postdata']->path;	
+			$post_name=strtolower(preg_replace('/[^A-Za-z0-9-]+/', '-', $row[$j]['postdata']->title));	
+			
+		    $excerpt = '';
+		    if(isset($row[$j]['postdata']->teaser)){
+			  $excerpt = $row[$j]['postdata']->teaser; 
+		    }
+		    
+			if($row[$j]['postdata']->moderate == 1){
+				$state = 'pending';
+			}else if($row[$j]['postdata']->status == 1){
+				$state = 'publish';
+			} else {
+				$state = 'draft';
+			}
+			
+			if(!empty($row[$j]['postdata']->body)){
+			   $post_content =  $row[$j]['postdata']->body;
+		    } else {
+				$post_content = '';
+			}
+		    
+		    $post_date = date("Y-m-d H:i:s", $row[$j]['postdata']->created);		    
+		    $post_modified = date("Y-m-d H:i:s", $row[$j]['postdata']->changed);	
+		    
+		    $post_title = $row[$j]['postdata']->title;
+		    $post_excerpt = $excerpt;
+		    $post_status = $state;
+		    $post_type = 'page';
+		    
+		     if($row[$j]['postdata']->comment == 0){
+				$comment_status = 'open';
+			 } else {
+				$comment_status = 'close'; 
+			 }
+			 
+		     $ping_status = 'close';
+		     $to_ping = '';
+		     $pinged = '';
+		     $post_content_filtered = '';
+		     $post_parent = 0;
+		     
+		     $guid = '';
+		     $menu_order = 0;
+		     $post_mime_type = '';
+		     $comment_count = $row[$j]['postdata']->comment_count;		    
+		     db_set_active('wordpress');
+		     $uid = 1;
+		     if($row[$j]['postdata']->uid >0){
+				 $uid = $row[$j]['postdata']->uid;
+			 }
+		     //Get User ID
+		     $post_author = $row[$j]['postdata']->uid;
+		     //Insert Post
+		     db_query("insert into ".$wpPrefix."posts (post_author, post_date, post_date_gmt, post_content, post_title, post_excerpt, post_status, comment_status, ping_status, post_name, to_ping, pinged, post_modified, post_modified_gmt, post_content_filtered, post_parent, guid, menu_order, post_type, post_mime_type, comment_count) values 
+													  ('%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s','%s', '%s', '%s', '%s', '%s', '%s', '%d','%s', '%d', '%s', '%s', '%d')",
+													  $post_author, $post_date, $post_date, $post_content, $post_title, $post_excerpt, $post_status, $comment_status, $ping_status, $post_name, $to_ping, $pinged, $post_modified, $post_modified, $post_content_filtered, $post_parent, $guid, $menu_order, $post_type, $post_mime_type, $comment_count);
+		    
+			 
+		   
+			$post_id = db_result(db_query("SELECT ID FROM  ".$wpPrefix."posts order by ID desc limit 0, 1"));
+			
+			//Update GUID value
+			$guid = $site_url.'?post_type=page&p='.$post_id;			
+			db_query("update ".$wpPrefix."posts set guid = '".$guid."' where id = $post_id");
+					
+			//Save Drupal Nid
+			db_query("insert into ".$wpPrefix."postmeta (post_id, meta_key, meta_value) values ('%d', '%s', '%s')", $post_id, 'old_drupal_content_id', $nid);
+						
+			//SEO insertion
+			db_query("insert into ".$wpPrefix."postmeta (post_id, meta_key, meta_value) values ('%d', '%s', '%s')", $post_id, '_yoast_wpseo_title', $row[$j]['postdata']->title);
+		 			
+			if($post_excerpt){
+				db_query("insert into ".$wpPrefix."postmeta (post_id, meta_key, meta_value) values ('%d', '%s', '%s')", $post_id, '_yoast_wpseo_metadesc', $post_excerpt);
+			}
+			
+		 	 //Attach Taxonomy Contents
+		   if(count($row[$j]['postdata']->taxonomy) > 0){
+			   $c = 0;
+				foreach($row[$j]['postdata']->taxonomy as $term){					
+					$term_taxonomy_id = db_result(db_query("SELECT term_taxonomy_id FROM ".$wpPrefix."term_taxonomy WHERE term_id = '%d'", $term->tid));
+					db_query("insert into ".$wpPrefix."term_relationships (object_id, term_taxonomy_id, term_order) values ('%d', '%d', '%d')", $post_id, $term_taxonomy_id, $c);	
+					$c++;					
+				}
+		  }
+		  
+		  
+		   $fid = $row[$j]['postdata']->fid;
+		   $wp_upload_folder =  date('Y/m',time());	
+		 	
+		 	 if(count($row[$j]['postdata']->files) > 0){
+				foreach($row[$j]['postdata']->files as $img){
+					//Insert Featured image
+					$image = $img->fid;						
+					$image_url = file_create_url($img->filepath);					
+					$source =  '/var/www/html/wordpress/wp-content/uploads/'.$wp_upload_folder;	
+					
+					$site_img_url = str_replace('http://localhost/kioonline/', 'http://www.kioonline.com/', $image_url);
+					$site_img_url2 = str_replace('http://localhost/kioonline/', 'http://kioonline.com/', $image_url);
+					
+					
+					
+					if (!is_dir($source)) {
+						mkdir($source, 0777, true);
+					}
+									
+					$destination = $source.'/'.basename($image_url);											
+					file_put_contents($destination, file_get_contents($image_url));
+						
+					$titl = explode('.',basename($image_url));				
+					$alt = $titl[0];				
+					$img_title = $img->filename;			   
+						
+					//db_set_active('rc_wordpress');
+						
+					$img_author =  $img->uid;
+					$img_created = date("Y-m-d H:i:s", $img->timestamp);
+						
+					$img_guid = $site_url.'wp-content/uploads/'.$wp_upload_folder.'/'.basename($image_url);
+					
+					
+					$post_content = str_replace($site_img_url, $img_guid, $post_content);
+					$post_content = str_replace($site_img_url2, $img_guid, $post_content);
+					
+					
+					db_query("insert into ".$wpPrefix."posts (post_author, post_date, post_date_gmt, post_content, post_title, post_excerpt, post_status, comment_status, ping_status, post_name, to_ping, pinged, post_modified, post_modified_gmt, post_content_filtered, post_parent, guid, menu_order, post_type, post_mime_type, comment_count) values 
+																  ('%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s','%s', '%s', '%s', '%s', '%s', '%s', '%d','%s', '%d', '%s', '%s', '%d')",
+																  $img_author, $img_created, $img_created, $img_title, $alt, $img_title, 'inherit', $comment_status, $ping_status, $titl[0], $to_ping, $pinged, $img_created, $img_created, $post_content_filtered, $post_id, $img_guid, 0, 'attachment', $img->filemime, 0);
+					   
+					   
+											
+				    $wp_post_id_result = db_result(db_query("select id from wp_posts order by id desc limit 0, 1"));
+						
+					$unserialise_array = array (
+											  'width' => 720,
+											  'height' => 720,
+											  'file' => $wp_upload_folder.'/'.basename($image_url),
+											  'sizes' => 
+											  array (
+											  ),
+											  'image_meta' => 
+											  array (
+												'aperture' => '0',
+												'credit' => '',
+												'camera' => '',
+												'caption' => '',
+												'created_timestamp' => '0',
+												'copyright' => '',
+												'focal_length' => '0',
+												'iso' => '0',
+												'shutter_speed' => '0',
+												'title' => '',
+												'orientation' => '0',
+												'keywords' => 
+												array (
+												),
+											  ),
+											);
+												
+					db_query("insert into ".$wpPrefix."postmeta (post_id, meta_key, meta_value) values ('%d', '%s', '%s')", $wp_post_id_result, '_wp_attachment_metadata', serialize($unserialise_array));
+					 
+					db_query("insert into ".$wpPrefix."postmeta (post_id, meta_key, meta_value) values ('%d', '%s', '%s')", $wp_post_id_result, '_wp_attached_file', $wp_upload_folder.'/'.basename($image_url));
+				
+					
+				}
+				
+				db_query("update ".$wpPrefix."posts set post_content = '%s' where ID = %d", $post_content, $post_id);
+						
+											
+			}
+		   	
+		 db_set_active();  
+		 
+		  $context['results']['updated'][] = $j;
+		  $context['sandbox']['progress']++;
+		  $counter++;
+          $context['message'] = t('Now processing node %nid.Process %progress of %count', array('%nid' => $nid, '%progress' => $context['sandbox']['progress'], '%count' => $context['sandbox']['max']));
+          $context['results']['processed'] = $context['sandbox']['progress'];
+      
+		}
+		
+	}
+	
+	if ($context['sandbox']['progress'] != $context['sandbox']['max']) {
+		$context['finished'] = $context['sandbox']['progress'] / $context['sandbox']['max'];
+	}
+	else if($context['sandbox']['progress'] == $context['sandbox']['max']) {
+		// Pass extra results to finished functions via $context['results']
+		$context['finished'] = 1;
+		$context['results']['data_custom'] = $data;
+	}  
+}
+
+
+
+
+/**
+ * 
+ * Migrate Books
+ * 
+ **/
+
+function migrate_books(){
+	
+	$nodes =array();
+	$result = db_query("select n.nid from {node} n where n.type = '%s'", 'book' );
+	while ($data = db_fetch_object($result)){
+		//print_r(node_load($data->nid));
+		array_push($nodes, node_load($data->nid));
+		
+	}
+
+	batch_process_book_migrate_op($nodes);
+	 $batch = array(
+		  'title' => t('Books Migrating'),
+		  'operations' => array(
+			  array('batch_process_book_migrate_op', array($nodes)),
+		   ),
+		  'progress_message' => t('Process @current out of @total.'),
+		  'error_message' => t('Batch has encountered an error.'),
+		  'finished' => 'batch_process_book_migrate_finished',       
+	  );
+     batch_set($batch);
+  
+  
+    batch_process('/'); 	   
+	
+}
+
+
+function batch_process_book_migrate_finished($success, $results, $operations){
+  if ($success) {    
+    drupal_set_message(t('@count Books Created', array('@count' => isset($results['updated']) ? count($results['updated']) : 0)));
+  } else {
+    $error_operation = reset($operations);
+    drupal_set_message(t('An error occurred while processing @operation with arguments : @args', array('@operation' => $error_operation[0], '@args' => print_r($error_operation[0], TRUE))));
+  }
+  watchdog('import', 'Books import batch process finished');
+}
+
+function batch_process_book_migrate_op($nodes, &$context){
+	
+	$wpPrefix = 'wp_';
+	$row = $data = array();
+	$itr = 0;
+	$count = 0;
+	$content = array();
+	
+	$site_url = "http://localhost/wordpress/";
+	
+	foreach($nodes as $key => $value) {
+		if($value->nid != 0){
+			$row[$itr]['postdata'] = $value;
+			print_r($row[$itr]['postdata']);
+			$itr++;
+		}
+	}	
+	die;
+	if (empty($context['sandbox']['progress'])) {
+		$context['sandbox']['progress'] = 0;
+		$context['sandbox']['max'] = count($nodes);
+		watchdog('import', 'Process User import.');
+	}
+	
+	// Create Iteration variable
+	if (empty($context['sandbox']['iteration'])) {
+		$context['sandbox']['iteration'] = 0;
+	}
+	
+	// Check for the end of cycle
+	if ($context['sandbox']['iteration'] < $context['sandbox']['max']) {
+		// Count of operation in one batch step
+		$limit = 10;
+		// Counts completed operations in one butch step
+		$counter = 0;
+		if ($context['sandbox']['progress'] != 0) {
+		  $context['sandbox']['iteration'] = $context['sandbox']['iteration'] + $limit;
+		}
+		
+		$wp_upload_folder =  date('2017/08',time());
+		
+		for ($j = $context['sandbox']['iteration']; $j < $context['sandbox']['max'] && $counter < $limit; $j++) {
+			$data = array();
+			$data2 = array();
+			
+			$nid = 	$row[$j]['postdata']->nid;
+			$post_path = $row[$j]['postdata']->path;	
+			$post_name=strtolower(preg_replace('/[^A-Za-z0-9-]+/', '-', $row[$j]['postdata']->title));			
+			
+		    $excerpt = '';
+		    if(isset($row[$j]['postdata']->teaser)){
+			  $excerpt = $row[$j]['postdata']->teaser; 
+		    }
+		    
+			if($row[$j]['postdata']->moderate == 1){
+				$state = 'pending';
+			}else if($row[$j]['postdata']->status == 1){
+				$state = 'publish';
+			} else {
+				$state = 'draft';
+			}
+			
+			if(!empty($row[$j]['postdata']->body)){
+			   $post_content =  $row[$j]['postdata']->body;
+		    } else {
+				$post_content = '';
+			}
+		    
+		    $post_date = date("Y-m-d H:i:s", $row[$j]['postdata']->created);		    
+		    $post_modified = date("Y-m-d H:i:s", $row[$j]['postdata']->changed);	
+		    
+		    $post_title = $row[$j]['postdata']->title;
+		    $post_excerpt = $excerpt;
+		    $post_status = $state;
+		    $post_type = 'book';
+		    
+		     if($row[$j]['postdata']->comment == 0){
+				$comment_status = 'open';
+			 } else {
+				$comment_status = 'close'; 
+			 }
+			 
+		     $ping_status = 'close';
+		     $to_ping = '';
+		     $pinged = '';
+		     $post_content_filtered = '';
+		     $post_parent = 0;
+		     
+		     $guid = '';
+		     $menu_order = 0;
+		     $post_mime_type = '';
+		     $comment_count = $row[$j]['postdata']->comment_count;		    
+		     db_set_active('wordpress');
+		     $uid = 1;
+		     if($row[$j]['postdata']->uid >0){
+				 $uid = $row[$j]['postdata']->uid;
+			 }
+		     //Get User ID
+		     $post_author = $row[$j]['postdata']->uid;
+		     
+		     //Insert Post
+		     db_query("insert into ".$wpPrefix."posts (post_author, post_date, post_date_gmt, post_content, post_title, post_excerpt, post_status, comment_status, ping_status, post_name, to_ping, pinged, post_modified, post_modified_gmt, post_content_filtered, post_parent, guid, menu_order, post_type, post_mime_type, comment_count) values 
+													  ('%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s','%s', '%s', '%s', '%s', '%s', '%s', '%d','%s', '%d', '%s', '%s', '%d')",
+													  $post_author, $post_date, $post_date, $post_content, $post_title, $post_excerpt, $post_status, $comment_status, $ping_status, $post_name, $to_ping, $pinged, $post_modified, $post_modified, $post_content_filtered, $post_parent, $guid, $menu_order, $post_type, $post_mime_type, $comment_count);
+		    
+			 
+		   
+			$post_id = db_result(db_query("SELECT ID FROM  ".$wpPrefix."posts order by ID desc limit 0, 1"));
+			
+			//Update GUID value
+			$guid = $site_url.'?post_type=book&p='.$post_id;			
+			db_query("update ".$wpPrefix."posts set guid = '".$guid."' where id = $post_id");
+					
+			//Save Drupal Nid
+			db_query("insert into ".$wpPrefix."postmeta (post_id, meta_key, meta_value) values ('%d', '%s', '%s')", $post_id, 'old_drupal_content_id', $nid);
+						
+			//SEO insertion
+			db_query("insert into ".$wpPrefix."postmeta (post_id, meta_key, meta_value) values ('%d', '%s', '%s')", $post_id, '_yoast_wpseo_title', $row[$j]['postdata']->title);
+		 			
+			if($post_excerpt){
+				db_query("insert into ".$wpPrefix."postmeta (post_id, meta_key, meta_value) values ('%d', '%s', '%s')", $post_id, '_yoast_wpseo_metadesc', $post_excerpt);
+			}
+		
+		 	 //Attach Taxonomy Contents
+		   if(count($row[$j]['postdata']->taxonomy) > 0){
+			   $c = 0;
+				foreach($row[$j]['postdata']->taxonomy as $term){					
+					$term_taxonomy_id = db_result(db_query("SELECT term_taxonomy_id FROM ".$wpPrefix."term_taxonomy WHERE term_id = '%d'", $term->tid));
+					db_query("insert into ".$wpPrefix."term_relationships (object_id, term_taxonomy_id, term_order) values ('%d', '%d', '%d')", $post_id, $term_taxonomy_id, $c);	
+					$c++;					
+				}
+		  }
+		  
+		  
+		   $fid = $row[$j]['postdata']->fid;
+		   $wp_upload_folder =  date('Y/m',time());	
+		 	
+		 	 if(count($row[$j]['postdata']->files) > 0){
+				foreach($row[$j]['postdata']->files as $img){
+					//Insert Featured image
+					$image = $img->fid;						
+					$image_url = file_create_url($img->filepath);					
+					$source =  '/var/www/html/wordpress/wp-content/uploads/'.$wp_upload_folder;	
+					
+					$site_img_url = str_replace('http://localhost/kioonline/', 'http://www.kioonline.com/', $image_url);
+					$site_img_url2 = str_replace('http://localhost/kioonline/', 'http://kioonline.com/', $image_url);
+					
+					if (!is_dir($source)) {
+						mkdir($source, 0777, true);
+					}
+									
+					$destination = $source.'/'.basename($image_url);											
+					file_put_contents($destination, file_get_contents($image_url));
+						
+					$titl = explode('.',basename($image_url));				
+					$alt = $titl[0];				
+								   
+					$img_title = $img->filename;
+					//if(!empty($img->description)){
+					//  $img_title = $img->description;
+					//}
+						
+					//db_set_active('rc_wordpress');
+					$img_author=$img->uid;
+					//$img_author = db_result(db_query("SELECT user_id FROM  ".$wpPrefix."usermeta WHERE meta_key = 'old_user_id' AND meta_value = %d limit 0, 1", $img->uid));
+					$img_created = date("Y-m-d H:i:s", $img->timestamp);
+						
+					$img_guid = $site_url.'wp-content/uploads/'.$wp_upload_folder.'/'.basename($image_url);
+					
+					
+					$post_content = str_replace($site_img_url, $img_guid, $post_content);
+					$post_content = str_replace($site_img_url2, $img_guid, $post_content);
+					
+					
+					db_query("insert into ".$wpPrefix."posts (post_author, post_date, post_date_gmt, post_content, post_title, post_excerpt, post_status, comment_status, ping_status, post_name, to_ping, pinged, post_modified, post_modified_gmt, post_content_filtered, post_parent, guid, menu_order, post_type, post_mime_type, comment_count) values 
+																  ('%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s','%s', '%s', '%s', '%s', '%s', '%s', '%d','%s', '%d', '%s', '%s', '%d')",
+																  $img_author, $img_created, $img_created, $img_title, $alt, $img_title, 'inherit', $comment_status, $ping_status, $titl[0], $to_ping, $pinged, $img_created, $img_created, $post_content_filtered, $post_id, $img_guid, 0, 'attachment', $img->filemime, 0);
+					   
+					   
+											
+				    $wp_post_id_result = db_result(db_query("select id from wp_posts order by id desc limit 0, 1"));
+						
+					$unserialise_array = array (
+											  'width' => 720,
+											  'height' => 720,
+											  'file' => $wp_upload_folder.'/'.basename($image_url),
+											  'sizes' => 
+											  array (
+											  ),
+											  'image_meta' => 
+											  array (
+												'aperture' => '0',
+												'credit' => '',
+												'camera' => '',
+												'caption' => '',
+												'created_timestamp' => '0',
+												'copyright' => '',
+												'focal_length' => '0',
+												'iso' => '0',
+												'shutter_speed' => '0',
+												'title' => '',
+												'orientation' => '0',
+												'keywords' => 
+												array (
+												),
+											  ),
+											);
+												
+					db_query("insert into ".$wpPrefix."postmeta (post_id, meta_key, meta_value) values ('%d', '%s', '%s')", $wp_post_id_result, '_wp_attachment_metadata', serialize($unserialise_array));
+					 
+					db_query("insert into ".$wpPrefix."postmeta (post_id, meta_key, meta_value) values ('%d', '%s', '%s')", $wp_post_id_result, '_wp_attached_file', $wp_upload_folder.'/'.basename($image_url));
+				
+					
+				}
+				
+				db_query("update ".$wpPrefix."posts set post_content = '%s' where ID = %d", $post_content, $post_id);
+						
+											
+			}
+		   	
+		 db_set_active();  
+		 
+		  $context['results']['updated'][] = $j;
+		  $context['sandbox']['progress']++;
+		  $counter++;
+          $context['message'] = t('Now processing node %nid.Process %progress of %count', array('%nid' => $nid, '%progress' => $context['sandbox']['progress'], '%count' => $context['sandbox']['max']));
+          $context['results']['processed'] = $context['sandbox']['progress'];
+      
+		}
+		
+	}
+	
+	if ($context['sandbox']['progress'] != $context['sandbox']['max']) {
+		$context['finished'] = $context['sandbox']['progress'] / $context['sandbox']['max'];
+	}
+	else if($context['sandbox']['progress'] == $context['sandbox']['max']) {
+		// Pass extra results to finished functions via $context['results']
+		$context['finished'] = 1;
+		$context['results']['data_custom'] = $data;
+	}  
+}
+
+
+
+
+
+
+
+
+
+/**
+ * 
+ * Migrate Story
+ * 
+ **/
+
+function migrate_story(){
+	
+	$nodes =array();
+	$result = db_query("select n.nid from {node} n where n.type = '%s'", 'story' );
+	while ($data = db_fetch_object($result)){
+		print_r(node_load($data->nid));die;
+		array_push($nodes, node_load($data->nid));
+		
+	}
+
+	
+	 $batch = array(
+		  'title' => t('Story Migrating'),
+		  'operations' => array(
+			  array('batch_process_story_migrate_op', array($nodes)),
+		   ),
+		  'progress_message' => t('Process @current out of @total.'),
+		  'error_message' => t('Batch has encountered an error.'),
+		  'finished' => 'batch_process_story_migrate_finished',       
+	  );
+     batch_set($batch);
+  
+  
+    batch_process('/'); 	   
+	
+}
+
+
+function batch_process_story_migrate_finished($success, $results, $operations){
+  if ($success) {    
+    drupal_set_message(t('@count Story Created', array('@count' => isset($results['updated']) ? count($results['updated']) : 0)));
+  } else {
+    $error_operation = reset($operations);
+    drupal_set_message(t('An error occurred while processing @operation with arguments : @args', array('@operation' => $error_operation[0], '@args' => print_r($error_operation[0], TRUE))));
+  }
+  watchdog('import', 'Story import batch process finished');
+}
+
+function batch_process_story_migrate_op($nodes, &$context){
+	
+	$wpPrefix = 'wp_';
+	$row = $data = array();
+	$itr = 0;
+	$count = 0;
+	$content = array();
+	
+	$site_url = "http://localhost/wordpress/";
+	
+	foreach($nodes as $key => $value) {
+		if($value->nid != 0){
+			$row[$itr]['postdata'] = $value;
+			$itr++;
+		}
+	}	
+	
+	if (empty($context['sandbox']['progress'])) {
+		$context['sandbox']['progress'] = 0;
+		$context['sandbox']['max'] = count($nodes);
+		watchdog('import', 'Process User import.');
+	}
+	
+	// Create Iteration variable
+	if (empty($context['sandbox']['iteration'])) {
+		$context['sandbox']['iteration'] = 0;
+	}
+	
+	// Check for the end of cycle
+	if ($context['sandbox']['iteration'] < $context['sandbox']['max']) {
+		// Count of operation in one batch step
+		$limit = 10;
+		// Counts completed operations in one butch step
+		$counter = 0;
+		if ($context['sandbox']['progress'] != 0) {
+		  $context['sandbox']['iteration'] = $context['sandbox']['iteration'] + $limit;
+		}
+		
+		$wp_upload_folder =  date('2017/08',time());
+		
+		for ($j = $context['sandbox']['iteration']; $j < $context['sandbox']['max'] && $counter < $limit; $j++) {
+			$data = array();
+			$data2 = array();
+			
+			$nid = 	$row[$j]['postdata']->nid;
+			$post_path = $row[$j]['postdata']->path;	
+			$post_name=strtolower(preg_replace('/[^A-Za-z0-9-]+/', '-', $row[$j]['postdata']->title));			
+			
+		    $excerpt = '';
+		    if(isset($row[$j]['postdata']->teaser)){
+			  $excerpt = $row[$j]['postdata']->teaser; 
+		    }
+		    
+			if($row[$j]['postdata']->moderate == 1){
+				$state = 'pending';
+			}else if($row[$j]['postdata']->status == 1){
+				$state = 'publish';
+			} else {
+				$state = 'draft';
+			}
+			
+			if(!empty($row[$j]['postdata']->body)){
+			   $post_content =  $row[$j]['postdata']->body;
+		    } else {
+				$post_content = '';
+			}
+		    
+		    $post_date = date("Y-m-d H:i:s", $row[$j]['postdata']->created);		    
+		    $post_modified = date("Y-m-d H:i:s", $row[$j]['postdata']->changed);	
+		    
+		    $post_title = $row[$j]['postdata']->title;
+		    $post_excerpt = $excerpt;
+		    $post_status = $state;
+		    $post_type = 'story';
+		    
+		     if($row[$j]['postdata']->comment == 0){
+				$comment_status = 'open';
+			 } else {
+				$comment_status = 'close'; 
+			 }
+			 
+		     $ping_status = 'close';
+		     $to_ping = '';
+		     $pinged = '';
+		     $post_content_filtered = '';
+		     $post_parent = 0;
+		     
+		     $guid = '';
+		     $menu_order = 0;
+		     $post_mime_type = '';
+		     $comment_count = $row[$j]['postdata']->comment_count;		    
+		     db_set_active('wordpress');
+		     $uid = 1;
+		     if($row[$j]['postdata']->uid >0){
+				 $uid = $row[$j]['postdata']->uid;
+			 }
+		     //Get User ID
+		     $post_author = $row[$j]['postdata']->uid;
+		     
+		     //Insert Post
+		     db_query("insert into ".$wpPrefix."posts (post_author, post_date, post_date_gmt, post_content, post_title, post_excerpt, post_status, comment_status, ping_status, post_name, to_ping, pinged, post_modified, post_modified_gmt, post_content_filtered, post_parent, guid, menu_order, post_type, post_mime_type, comment_count) values 
+													  ('%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s','%s', '%s', '%s', '%s', '%s', '%s', '%d','%s', '%d', '%s', '%s', '%d')",
+													  $post_author, $post_date, $post_date, $post_content, $post_title, $post_excerpt, $post_status, $comment_status, $ping_status, $post_name, $to_ping, $pinged, $post_modified, $post_modified, $post_content_filtered, $post_parent, $guid, $menu_order, $post_type, $post_mime_type, $comment_count);
+		    
+			 
+		   
+			$post_id = db_result(db_query("SELECT ID FROM  ".$wpPrefix."posts order by ID desc limit 0, 1"));
+			
+			//Update GUID value
+			$guid = $site_url.'?post_type=story&p='.$post_id;			
+			db_query("update ".$wpPrefix."posts set guid = '".$guid."' where id = $post_id");
+					
+			//Save Drupal Nid
+			db_query("insert into ".$wpPrefix."postmeta (post_id, meta_key, meta_value) values ('%d', '%s', '%s')", $post_id, 'old_drupal_content_id', $nid);
+						
+			//SEO insertion
+			db_query("insert into ".$wpPrefix."postmeta (post_id, meta_key, meta_value) values ('%d', '%s', '%s')", $post_id, '_yoast_wpseo_title', $row[$j]['postdata']->title);
+		 			
+			if($post_excerpt){
+				db_query("insert into ".$wpPrefix."postmeta (post_id, meta_key, meta_value) values ('%d', '%s', '%s')", $post_id, '_yoast_wpseo_metadesc', $post_excerpt);
+			}
+		
+		 	 //Attach Taxonomy Contents
+		   if(count($row[$j]['postdata']->taxonomy) > 0){
+			   $c = 0;
+				foreach($row[$j]['postdata']->taxonomy as $term){					
+					$term_taxonomy_id = db_result(db_query("SELECT term_taxonomy_id FROM ".$wpPrefix."term_taxonomy WHERE term_id = '%d'", $term->tid));
+					db_query("insert into ".$wpPrefix."term_relationships (object_id, term_taxonomy_id, term_order) values ('%d', '%d', '%d')", $post_id, $term_taxonomy_id, $c);	
+					$c++;					
+				}
+		  }
+		  
+		  
+		   $fid = $row[$j]['postdata']->fid;
+		   $wp_upload_folder =  date('Y/m',time());	
+		 	
+		 	 if(count($row[$j]['postdata']->files) > 0){
+				foreach($row[$j]['postdata']->files as $img){
+					//Insert Featured image
+					$image = $img->fid;						
+					$image_url = file_create_url($img->filepath);					
+					$source =  '/var/www/html/wordpress/wp-content/uploads/'.$wp_upload_folder;	
+					
+					$site_img_url = str_replace('http://localhost/kioonline/', 'http://www.kioonline.com/', $image_url);
+					$site_img_url2 = str_replace('http://localhost/kioonline/', 'http://kioonline.com/', $image_url);
+					
+					if (!is_dir($source)) {
+						mkdir($source, 0777, true);
+					}
+									
+					$destination = $source.'/'.basename($image_url);											
+					file_put_contents($destination, file_get_contents($image_url));
+						
+					$titl = explode('.',basename($image_url));				
+					$alt = $titl[0];				
+								   
+					$img_title = $img->filename;
+					//if(!empty($img->description)){
+					//  $img_title = $img->description;
+					//}
+						
+					//db_set_active('rc_wordpress');
+					$img_author=$img->uid;
+					//$img_author = db_result(db_query("SELECT user_id FROM  ".$wpPrefix."usermeta WHERE meta_key = 'old_user_id' AND meta_value = %d limit 0, 1", $img->uid));
+					$img_created = date("Y-m-d H:i:s", $img->timestamp);
+						
+					$img_guid = $site_url.'wp-content/uploads/'.$wp_upload_folder.'/'.basename($image_url);
+					
+					
+					$post_content = str_replace($site_img_url, $img_guid, $post_content);
+					$post_content = str_replace($site_img_url2, $img_guid, $post_content);
+					
+					
+					db_query("insert into ".$wpPrefix."posts (post_author, post_date, post_date_gmt, post_content, post_title, post_excerpt, post_status, comment_status, ping_status, post_name, to_ping, pinged, post_modified, post_modified_gmt, post_content_filtered, post_parent, guid, menu_order, post_type, post_mime_type, comment_count) values 
+																  ('%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s','%s', '%s', '%s', '%s', '%s', '%s', '%d','%s', '%d', '%s', '%s', '%d')",
+																  $img_author, $img_created, $img_created, $img_title, $alt, $img_title, 'inherit', $comment_status, $ping_status, $titl[0], $to_ping, $pinged, $img_created, $img_created, $post_content_filtered, $post_id, $img_guid, 0, 'attachment', $img->filemime, 0);
+					   
+					   
+											
+				    $wp_post_id_result = db_result(db_query("select id from wp_posts order by id desc limit 0, 1"));
+						
+					$unserialise_array = array (
+											  'width' => 720,
+											  'height' => 720,
+											  'file' => $wp_upload_folder.'/'.basename($image_url),
+											  'sizes' => 
+											  array (
+											  ),
+											  'image_meta' => 
+											  array (
+												'aperture' => '0',
+												'credit' => '',
+												'camera' => '',
+												'caption' => '',
+												'created_timestamp' => '0',
+												'copyright' => '',
+												'focal_length' => '0',
+												'iso' => '0',
+												'shutter_speed' => '0',
+												'title' => '',
+												'orientation' => '0',
+												'keywords' => 
+												array (
+												),
+											  ),
+											);
+												
+					db_query("insert into ".$wpPrefix."postmeta (post_id, meta_key, meta_value) values ('%d', '%s', '%s')", $wp_post_id_result, '_wp_attachment_metadata', serialize($unserialise_array));
+					 
+					db_query("insert into ".$wpPrefix."postmeta (post_id, meta_key, meta_value) values ('%d', '%s', '%s')", $wp_post_id_result, '_wp_attached_file', $wp_upload_folder.'/'.basename($image_url));
+				
+					
+				}
+				
+				db_query("update ".$wpPrefix."posts set post_content = '%s' where ID = %d", $post_content, $post_id);
+						
+											
+			}
+		   	
+		 db_set_active();  
+		 
+		  $context['results']['updated'][] = $j;
+		  $context['sandbox']['progress']++;
+		  $counter++;
+          $context['message'] = t('Now processing node %nid.Process %progress of %count', array('%nid' => $nid, '%progress' => $context['sandbox']['progress'], '%count' => $context['sandbox']['max']));
+          $context['results']['processed'] = $context['sandbox']['progress'];
+      
+		}
+		
+	}
+	
+	if ($context['sandbox']['progress'] != $context['sandbox']['max']) {
+		$context['finished'] = $context['sandbox']['progress'] / $context['sandbox']['max'];
+	}
+	else if($context['sandbox']['progress'] == $context['sandbox']['max']) {
+		// Pass extra results to finished functions via $context['results']
+		$context['finished'] = 1;
+		$context['results']['data_custom'] = $data;
+	}  
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/**
+ * 
+ * Get Taxonomy vocabulary details by its name
+ * 
+ **/
+function get_vocabulary_by_name($vocabulary_name) {
+  $vocabs = taxonomy_get_vocabularies(NULL);
+  foreach ($vocabs as $vocab_object) {
+    if ($vocab_object->name == $vocabulary_name) {
+      return $vocab_object;
+    }
+  }
+  return NULL;
+}
+
+
+function update_users(){
+	$operations = array();
+	// build the list of operation functions and function arguments 
+	$result = db_query("SELECT uid FROM {users} limit 0, 60000"); 
+	while ($data = db_fetch_object($result)){
+		db_set_active();
+		$user_load = user_load($data->uid);	
+		//~ //$operations[] = array('batch_process_upd_users_op', array($user_load)); 
+		 $wpPrefix = 'wp_';	
+		
+		db_set_active('wordpress');
+     
+	  
+	   
+	   echo "Process user" . $uid;
+	   $uid=$user_load->uid;
+	   $user_login =$user_load->name;
+	   $password = $user_load->pass; 
+	   $email = $user_load->mail;
+	   $user_registered = date("Y-m-d H:i:s", $user_load->created);
+	   $userStatus = ($user_load->status == 0 ? 1 : 0);
+	   $roles = $user_load->roles;
+	   $twitter = $user_load->profile_twitter;
+	   $webpage1 = $user_load->profile_webpage1;
+	   $webpage2 =$user_load->profile_webpage2;
+	   $realname = $user_load->profile_real_name;
+	   $employer = $user_load->profile_employer;
+	   $interests = $user_load->interests;  
+	   $picture= $user_load->picture;	
+			
+	 db_query("insert into ".$wpPrefix."users (ID, user_login, user_pass, user_nicename, user_email, user_registered, user_status, display_name) VALUES (%d, '%s', '%s', '%s', '%s', '%s', '%d','%s')", $uid,$user_login, $password, preg_replace('/[^a-z]/','-', strtolower($user_login)), $email, $user_registered, $userStatus, $user_login);
+	 
+	  $wp_uid = db_result(db_query("select ID from wp_users order by ID desc limit 0, 1"));
+	 
+	 if($wp_uid > 0){
+		 if(in_array('administrator', $roles)){
+		    $wp_capabilities = serialize(array('administrator'=>1));
+		    $wp_user_level = 10;
+	    }else if(in_array('editor', $roles)){
+		    $wp_capabilities = serialize(array('editor'=>1));
+		    $wp_user_level = 7;
+	   }else if(in_array('editor plus', $roles)){
+		  $wp_capabilities = serialize(array('editor plus'=>1));
+		    $wp_user_level = 8;
+	    }else if(in_array('super editor', $roles)){
+		   $wp_capabilities = serialize(array('super editor'=>1));
+		   $wp_user_level = 9;
+	    }else if(in_array('authenticated user', $roles)){
+		    $wp_capabilities = serialize(array('authenticated user'=>1));
+		    $wp_user_level = 1;
+	   }else if(in_array('anonymous user', $roles)){
+		    $wp_capabilities = serialize(array('anonymous user'=>1));
+		    $wp_user_level = 0;
+	    }
+	   
+	   
+			 
+		 db_query("insert into ".$wpPrefix."usermeta (user_id, meta_key, meta_value) VALUES (%d, '%s', '%s')", $wp_uid, 'wp_capabilities', $wp_capabilities);
+
+		
+		 db_query("insert into ".$wpPrefix."usermeta (user_id, meta_key, meta_value) VALUES (%d, '%s', '%s')", $wp_uid, 'wp_user_level', $wp_user_level);
+
+		 db_query("insert into ".$wpPrefix."usermeta (user_id, meta_key, meta_value) VALUES (%d, '%s', '%s')", $wp_uid, 'nickname', preg_replace('/[^a-z]/','-', strtolower($user_login)));
+			 
+		 db_query("insert into ".$wpPrefix."usermeta (user_id, meta_key, meta_value) VALUES (%d, '%s', '%s')", $wp_uid, 'first_name', '');
+		 
+		db_query("insert into ".$wpPrefix."usermeta (user_id, meta_key, meta_value) VALUES (%d, '%s', '%s')", $wp_uid, 'last_name', '');
+		 
+		 db_query("insert into ".$wpPrefix."usermeta (user_id, meta_key, meta_value) VALUES (%d, '%s', '%s')", $wp_uid, 'description', '');
+		db_query("insert into ".$wpPrefix."usermeta (user_id, meta_key, meta_value) VALUES (%d, '%s', '%s')", $wp_uid, 'profile_real_name', $realname);
+		 db_query("insert into ".$wpPrefix."usermeta (user_id, meta_key, meta_value) VALUES (%d, '%s', '%s')", $wp_uid, 'profile_employer', $employer);
+		 db_query("insert into ".$wpPrefix."usermeta (user_id, meta_key, meta_value) VALUES (%d, '%s', '%s')", $wp_uid, 'profile_twitter', $twitter);
+		 db_query("insert into ".$wpPrefix."usermeta (user_id, meta_key, meta_value) VALUES (%d, '%s', '%s')", $wp_uid, 'profile_webpage1', $webpage1);
+		 db_query("insert into ".$wpPrefix."usermeta (user_id, meta_key, meta_value) VALUES (%d, '%s', '%s')", $wp_uid, 'profile_webpage2', $webpage2);
+		db_query("insert into ".$wpPrefix."usermeta (user_id, meta_key, meta_value) VALUES (%d, '%s', '%s')", $wp_uid, 'interests', $interests);
+		 db_query("insert into ".$wpPrefix."usermeta (user_id, meta_key, meta_value) VALUES (%d, '%s', '%s')", $wp_uid, 'picture', $picture);
+				
+	 }
+	 
+	}	
+	
+	
+}
+ 
+/**
+ * Form For migrate Taxonomy
+ * 
+ **/
+function migrate_taxonomies(&$form_state) {	
+  $form['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Migrate Taxonomies'),
+  );
+   $checkbox_options = array('Forums' => 'Forums', 'Image Galleries' => 'Image Galleries', 'Tags' => 'Tags', 'Topics' => 'Topics');
+      $form['check_taxonomy'] = array(
+        '#type' => 'checkboxes',
+        '#options' => $checkbox_options,
+        '#multiple' => TRUE,
+      );
+  return $form;
+}
+
+function migrate_taxonomies_submit($form, &$form_state) {
+	$active_taxonomies = array();
+	
+	foreach($form_state['values']['check_taxonomy'] as $k=>$v){
+		if($v)
+		$active_taxonomies[] = $k;
+	}
+	foreach($active_taxonomies as $voc_name){
+		$v = get_vocabulary_by_name($voc_name);		
+		$voc_details = taxonomy_get_tree($v->vid);	
+		
+		do_taxonomy_migration($voc_details, $voc_name);
+	}	
+}
+
+ 
+ /**
+  * 
+  * Batch Process for Taxonomy migrate
+  * 
+  **/ 
+ function do_taxonomy_migration($voc_details, $voc_name){
+  $batch = array(
+      'title' => t('Texonomy Migrating'),
+      'operations' => array(
+          array('_taxonomies_migrate', array($voc_details, $voc_name)),
+      ),
+      'progress_message' => t('Process Taxonomy import. Operation @current out of @total.'),
+      'error_message' => t('Error!'),
+      'finished' => '_batch_taxonomy_migration_finished',       
+  );
+  batch_set($batch);
+}
+
+function _batch_taxonomy_migration_finished($success, $results, $operations){
+	 if ($success) {
+    //~ variable_set('set_balance_last_run', time());
+    drupal_set_message(t('@count Taxonomy Created', array('@count' => isset($results['updated']) ? count($results['updated']) : 0)));
+  } else {
+    $error_operation = reset($operations);
+    drupal_set_message(t('An error occurred while processing @operation with arguments : @args', array('@operation' => $error_operation[0], '@args' => print_r($error_operation[0], TRUE))));
+  }
+  watchdog('import', 'Taxonomy import batch process finished');
+}
+
+function _taxonomies_migrate($voc_details, $voc_name, &$context){
+	$wpPrefix = 'wp_';
+	$row = $data = array();
+	$itr = 0;	
+	foreach($voc_details as $key => $value) {		
+			$row[$itr]['taxonomydata'] = $value;
+			$itr++;	
+				
+			
+	}	
+	
+	if (empty($context['sandbox']['progress'])) {
+		$context['sandbox']['progress'] = 0;
+		$context['sandbox']['max'] = count($voc_details);
+		watchdog('import', 'Process Taxonomy import.');
+	}
+	
+  // Create Iteration variable
+  if (empty($context['sandbox']['iteration'])) {
+    $context['sandbox']['iteration'] = 0;
+  }
+  
+  // Check for the end of cycle
+  if ($context['sandbox']['iteration'] < $context['sandbox']['max']) {
+    // Count of operation in one batch step
+    $limit = 10;
+    
+    // Counts completed operations in one butch step
+    $counter = 0;
+    if ($context['sandbox']['progress'] != 0) {
+      $context['sandbox']['iteration'] = $context['sandbox']['iteration'] + $limit;
+    }
+    
+    for ($j = $context['sandbox']['iteration']; $j < $context['sandbox']['max'] && $counter < $limit; $j++) {
+		$data = array();
+		$data2 = array();
+		
+		$alias = drupal_get_path_alias('taxonomy/term/' . $row[$j]['taxonomydata']->tid);
+		$machine_name = explode('/',$alias);
+		if($machine_name[1] == 'term'){
+			$slug =  str_replace(" ","-", strtolower($row[$j]['taxonomydata']->name));
+		} else {
+			$slug = $machine_name[1];
+		}
+		$parent = $row[$j]['taxonomydata']->parents;
+		$parent_name = taxonomy_get_parents($row[$j]['taxonomydata']->tid);
+		$taxonomy_parent_id = 0;
+		$taxonomy_parent_name = '';
+		
+		if($voc_name == 'Forums'){
+			$taxonomy = 'forums';
+		} else if($voc_name == 'Image Galleries'){
+			$taxonomy = 'image_galleries';
+		} else if($voc_name == 'Tags'){
+			$taxonomy = 'tags';
+		} else if($voc_name == 'Topics'){
+			$taxonomy = 'topics';
+		}
+		
+		$taxonomy_parent_name = $taxonomy;
+		
+		if($parent_name){
+			foreach($parent_name as $k=> $v){
+				$taxonomy_parent_id = $v->tid;				
+			}			
+		}
+		
+		   $parents				= 	$parent[0];		   
+		   $name 				= 	$row[$j]['taxonomydata']->name;
+		   $description 		= 	$row[$j]['taxonomydata']->description;
+		   $tid 				= 	$row[$j]['taxonomydata']->tid;
+		 
+		   db_set_active('wordpress');						
+			
+			
+			$exists = db_result(db_query('SELECT * FROM '.$wpPrefix.'terms WHERE term_id = %d', $tid));
+			if ($exists == FALSE){
+				db_query("insert into ".$wpPrefix."terms (term_id, name, slug, term_group) VALUES (%d, '%s', '%s', '%d')", $tid, $name, $slug, 0);
+		    } else {
+				db_query("update ".$wpPrefix."terms set name = '%s', slug = '%s', term_group = '%s' where term_id = '%d'", $name, $slug, 0, $tid);
+	
+			}
+			
+			$exists2 = db_result(db_query('SELECT * FROM '.$wpPrefix.'term_taxonomy WHERE term_id = %d', $tid));
+			if ($exists2 == FALSE){		
+				db_query("insert into ".$wpPrefix."term_taxonomy (term_id, taxonomy, description, parent, count) VALUES (%d, '%s', '%s', '%s', '%d')", $tid, $taxonomy_parent_name, $field_cat_des, $taxonomy_parent_id, 0);
+		    } else {
+				db_query("update ".$wpPrefix."term_taxonomy set taxonomy = '%s', description = '%s', parent = '%s', count = '%d' where term_id = '%d'", $taxonomy_parent_name, $field_cat_des, $taxonomy_parent_id, 0, $tid);
+	
+			}
+			   
+		    db_set_active();
+		
+      $context['results']['updated'][] = $j;
+      $context['sandbox']['progress']++;
+      $counter++;
+      $context['message'] = t('Now processing taxonomy %nid.Process %progress of %count', array('%nid' => $tid, '%progress' => $context['sandbox']['progress'], '%count' => $context['sandbox']['max']));
+      $context['results']['processed'] = $context['sandbox']['progress'];
+    }
+    //~ die;
+  }
+  
+  if ($context['sandbox']['progress'] != $context['sandbox']['max']) {
+    $context['finished'] = $context['sandbox']['progress'] / $context['sandbox']['max'];
+  }
+  else if($context['sandbox']['progress'] == $context['sandbox']['max']) {
+    // Pass extra results to finished functions via $context['results']
+    $context['finished'] = 1;
+    $context['results']['data_custom'] = $data;
+  }
+
+	
+}
+
